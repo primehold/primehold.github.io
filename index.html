@@ -9,9 +9,15 @@ let lbPh = [], lbIdx = 0;
 const EM = { Apartment:'🏢', House:'🏡', Studio:'🛋️', Townhouse:'🏘️', Commercial:'🏬' };
 
 function save() {
-  localStorage.setItem('ph_units', JSON.stringify(units));
-  localStorage.setItem('ph_enq',   JSON.stringify(enquiries));
-  localStorage.setItem('ph_pawn',  JSON.stringify(pawnReqs));
+  try {
+    localStorage.setItem('ph_units', JSON.stringify(units));
+    localStorage.setItem('ph_enq',   JSON.stringify(enquiries));
+    localStorage.setItem('ph_pawn',  JSON.stringify(pawnReqs));
+  } catch (e) {
+    if (e.name === 'QuotaExceededError') {
+      alert('Your browser storage is full! You cannot add any more photos unless you delete old units.');
+    }
+  }
 }
 
 function toast(msg) {
@@ -27,46 +33,56 @@ function switchTab(id, btn) {
   btn.classList.add('active');
 }
 
-// PHOTOS — Cloudinary upload
-const CLOUD_NAME = 'ducjsgjji'; // Fixed to your correct cloud name
-const UPLOAD_PRESET = 'primehold_uploads';
-
-async function uploadToCloudinary(file) {
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('upload_preset', UPLOAD_PRESET);
-  fd.append('cloud_name', CLOUD_NAME);
-  const res = await fetch('https://api.cloudinary.com/v1_1/' + CLOUD_NAME + '/image/upload', {
-    method: 'POST',
-    body: fd
-  });
-  if (!res.ok) throw new Error('Server error ' + res.status);
-  const data = await res.json();
-  if (!data.secure_url) throw new Error(data.error ? data.error.message : 'No URL returned');
-  return data.secure_url;
-}
-
+// PHOTOS — Local Device Upload (Compresses and saves to phone memory)
 async function handlePhotos(e) {
   const files = Array.from(e.target.files);
   if (!files.length) return;
   const left = 8 - pendingPh.length;
   if (files.length > left) toast('⚠️ Max 8 photos per unit');
   const toUpload = files.slice(0, left);
-  toast('⏳ Uploading ' + toUpload.length + ' photo(s)...');
+  toast('⏳ Processing ' + toUpload.length + ' photo(s)...');
+
   let success = 0;
   for (const f of toUpload) {
     try {
-      const url = await uploadToCloudinary(f);
-      pendingPh.push(url);
+      const base64Data = await compressAndRead(f);
+      pendingPh.push(base64Data);
       renderPreviews();
       success++;
     } catch (err) {
-      console.error('Upload error:', err);
-      toast('❌ Failed to upload ' + f.name + '. Check Cloudinary preset.');
+      console.error('Photo error:', err);
+      toast('❌ Failed to process ' + f.name);
     }
   }
-  if (success > 0) toast('✅ ' + success + ' photo(s) uploaded successfully!');
+  if (success > 0) toast('✅ ' + success + ' photo(s) added!');
   e.target.value = '';
+}
+
+// Helper function to resize the image to save space
+function compressAndRead(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target.result;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 600; // Resize width to 600px to save storage space
+        const scaleSize = MAX_WIDTH / img.width;
+        canvas.width = MAX_WIDTH;
+        canvas.height = img.height * scaleSize;
+
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        
+        // Convert to highly compressed JPEG
+        resolve(canvas.toDataURL('image/jpeg', 0.6)); 
+      };
+      img.onerror = (err) => reject(err);
+    };
+    reader.onerror = (err) => reject(err);
+  });
 }
 
 function renderPreviews() {
@@ -85,4 +101,186 @@ function addUnit() {
   const type   = document.getElementById('uType').value;
   const status = document.getElementById('uStatus').value;
   const loc    = document.getElementById('uLoc').value.trim();
-  const beds   = document
+  const beds   = document.getElementById('uBeds').value;
+  const baths  = document.getElementById('uBaths').value;
+  const size   = document.getElementById('uSize').value;
+  const rent   = document.getElementById('uRent').value;
+  const desc   = document.getElementById('uDesc').value.trim();
+  if (!name || !loc || !rent) { toast('⚠️ Name, Location and Rent are required'); return; }
+  units.push({ id: Date.now(), name, type, status, loc, beds, baths, size, rent: Number(rent), desc, photos: [...pendingPh] });
+  pendingPh = []; renderPreviews(); save(); renderAll();
+  toast('✅ Unit added successfully!');
+  ['uName','uLoc','uBeds','uBaths','uSize','uRent','uDesc'].forEach(id => document.getElementById(id).value = '');
+}
+
+function deleteUnit(id) {
+  if (!confirm('Remove this unit?')) return;
+  units = units.filter(u => u.id !== id);
+  save(); renderAll(); toast('🗑️ Unit removed.');
+}
+
+function badge(s) {
+  const c = s==='Available'?'badge-available':s==='Pending'?'badge-pending':'badge-rented';
+  return `<span class="badge ${c}">${s}</span>`;
+}
+
+// RENDER ADMIN
+function renderAdmin() {
+  const tb = document.getElementById('adminTbody');
+  if (!units.length) { tb.innerHTML = '<tr><td colspan="5" class="empty-row">No units yet — add one!</td></tr>'; return; }
+  tb.innerHTML = units.map(u => `
+    <tr>
+      <td>${u.photos&&u.photos.length?`<img class="tbl-thumb" src="${u.photos[0]}" alt="">`: `<span class="tbl-ph">${EM[u.type]||'🏠'}</span>`}</td>
+      <td><strong>${u.name}</strong><br><span style="color:rgba(245,240,232,0.3);font-size:0.74rem">${u.loc}</span></td>
+      <td style="font-weight:700">R ${u.rent.toLocaleString()}</td>
+      <td>${badge(u.status)}</td>
+      <td><button class="del-btn" onclick="deleteUnit(${u.id})">🗑️</button></td>
+    </tr>`).join('');
+}
+
+// RENDER PUBLIC
+function renderPublic() {
+  const fT = document.getElementById('fType').value;
+  const fM = parseFloat(document.getElementById('fMax').value)||Infinity;
+  const fB = document.getElementById('fBeds').value;
+  const fS = document.getElementById('fStat').value;
+  let list = units.filter(u => {
+    if (fT && u.type!==fT) return false;
+    if (u.rent>fM) return false;
+    if (fB && Number(u.beds)<Number(fB)) return false;
+    if (fS && u.status!==fS) return false;
+    return true;
+  });
+  const g = document.getElementById('publicGrid');
+  if (!list.length) { g.innerHTML='<div class="no-units">😕 No units match your filters. Try adjusting!</div>'; }
+  else {
+    g.innerHTML = list.map((u,i)=>{
+      const hasPh = u.photos&&u.photos.length>0;
+      const imgH = hasPh
+        ? `<img src="${u.photos[0]}" alt="${u.name}" style="width:100%;height:100%;object-fit:cover;display:block" onclick="openLb(${u.id},0,event)">`
+        : `<span class="unit-emoji">${EM[u.type]||'🏠'}</span>`;
+      const pill = hasPh&&u.photos.length>1 ? `<span class="photo-pill">📷 ${u.photos.length}</span>` : '';
+      return `
+        <div class="unit-card" style="animation-delay:${i*0.06}s">
+          <div class="unit-img">${imgH}<div class="unit-status-badge">${badge(u.status)}</div>${pill}</div>
+          <div class="unit-body">
+            <div class="unit-type-tag">${u.type}</div>
+            <div class="unit-name">${u.name}</div>
+            <div class="unit-loc">📍 ${u.loc}</div>
+            <div class="unit-feats">
+              ${u.beds?`<span>🛏 ${u.beds} Bed${u.beds>1?'s':''}</span>`:''}
+              ${u.baths?`<span>🚿 ${u.baths} Bath${u.baths>1?'s':''}</span>`:''}
+              ${u.size?`<span>📐 ${u.size}m²</span>`:''}
+            </div>
+            ${u.desc?`<p class="unit-desc">${u.desc.slice(0,110)}${u.desc.length>110?'…':''}</p>`:''}
+            <div class="unit-price-row">
+              <div><span class="price-amt">R ${u.rent.toLocaleString()}</span><span class="price-per">/month</span></div>
+              <button class="enq-btn" onclick="openModal(${u.id})" ${u.status==='Rented'?'disabled':''}>
+                ${u.status==='Rented'?'Rented':'Enquire'}
+              </button>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+  }
+  document.getElementById('heroStat').textContent = units.filter(u=>u.status==='Available').length;
+}
+
+// RENDER ENQUIRIES
+function renderEnq() {
+  const el = document.getElementById('enqList');
+  if (!enquiries.length) { el.innerHTML='<div class="empty-row">No enquiries yet.</div>'; return; }
+  el.innerHTML = enquiries.slice().reverse().map(e=>`
+    <div class="enq-card">
+      <div class="enq-head"><div><span class="enq-name">${e.name}</span><span class="enq-unit">→ ${e.unitName}</span></div><span class="enq-date">${e.date}</span></div>
+      <div class="enq-contact">📞 ${e.phone} &nbsp; ✉️ ${e.email}</div>
+      ${e.msg?`<div class="enq-msg">"${e.msg}"</div>`:''}
+    </div>`).join('');
+}
+
+// RENDER PAWN LIST
+function renderPawnList() {
+  const el = document.getElementById('pawnList');
+  if (!pawnReqs.length) { el.innerHTML='<div class="empty-row">No pawn requests yet.</div>'; return; }
+  el.innerHTML = pawnReqs.slice().reverse().map(p=>`
+    <div class="enq-card">
+      <div class="enq-head">
+        <div><span class="enq-name">${p.name}</span><span style="background:rgba(201,168,76,0.16);color:var(--gold);padding:.13rem .52rem;border-radius:10px;font-size:.71rem;margin-left:.55rem;font-weight:700">${p.cat}</span></div>
+        <span class="enq-date">${p.date}</span>
+      </div>
+      <div class="enq-contact">📞 ${p.phone} &nbsp; ✉️ ${p.email}</div>
+      <div style="color:rgba(245,240,232,0.55);font-size:.81rem;margin-top:.38rem">${p.desc}</div>
+      <div style="display:flex;gap:2rem;margin-top:.45rem;font-size:.81rem">
+        ${p.val?`<span style="color:var(--gold)">Est. Value: R ${Number(p.val).toLocaleString()}</span>`:''}
+        ${p.amt?`<span style="color:#6db56d">Needs: R ${Number(p.amt).toLocaleString()}</span>`:''}
+      </div>
+    </div>`).join('');
+}
+
+function renderAll() { renderAdmin(); renderPublic(); renderEnq(); renderPawnList(); }
+
+// MODAL
+function openModal(id) {
+  curUnit = units.find(u=>u.id===id);
+  if (!curUnit) return;
+  document.getElementById('modalInfo').innerHTML=`<h3>${curUnit.name}</h3><p>${curUnit.type} · ${curUnit.loc} · R ${curUnit.rent.toLocaleString()}/mo</p>`;
+  ['eqName','eqPhone','eqEmail','eqMsg'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('enquiryModal').classList.add('open');
+}
+function closeModal() { document.getElementById('enquiryModal').classList.remove('open'); curUnit=null; }
+document.getElementById('enquiryModal').addEventListener('click',e=>{ if(e.target===document.getElementById('enquiryModal')) closeModal(); });
+
+function submitEnquiry() {
+  const name=document.getElementById('eqName').value.trim();
+  const phone=document.getElementById('eqPhone').value.trim();
+  const email=document.getElementById('eqEmail').value.trim();
+  const msg=document.getElementById('eqMsg').value.trim();
+  if(!name||!phone||!email){toast('⚠️ Name, Phone & Email required');return;}
+  enquiries.push({unitId:curUnit.id,unitName:curUnit.name,name,phone,email,msg,date:new Date().toLocaleDateString('en-ZA',{day:'numeric',month:'short',year:'numeric'})});
+  save(); renderEnq(); closeModal();
+  toast('✅ Enquiry sent! We\'ll be in touch soon.');
+}
+
+// PAWN SUBMIT
+function submitPawn() {
+  const name=document.getElementById('pawnName').value.trim();
+  const phone=document.getElementById('pawnPhone').value.trim();
+  const email=document.getElementById('pawnEmail').value.trim();
+  const cat=document.getElementById('pawnCat').value;
+  const desc=document.getElementById('pawnDesc').value.trim();
+  const val=document.getElementById('pawnVal').value;
+  const amt=document.getElementById('pawnAmt').value;
+  if(!name||!phone||!email||!cat||!desc){toast('⚠️ Please fill in all required fields');return;}
+  pawnReqs.push({name,phone,email,cat,desc,val,amt,date:new Date().toLocaleDateString('en-ZA',{day:'numeric',month:'short',year:'numeric'})});
+  save(); renderPawnList();
+  ['pawnName','pawnPhone','pawnEmail','pawnDesc','pawnVal','pawnAmt'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('pawnCat').value='';
+  toast('✅ Quote submitted! We\'ll contact you within 24 hours.');
+}
+
+// LIGHTBOX
+function openLb(unitId, idx, e) {
+  if(e) e.stopPropagation();
+  const u=units.find(u=>u.id===unitId);
+  if(!u||!u.photos||!u.photos.length) return;
+  lbPh=u.photos; lbIdx=idx; showLb();
+  document.getElementById('lightbox').classList.add('open');
+}
+function showLb() {
+  document.getElementById('lbImg').src=lbPh[lbIdx];
+  document.getElementById('lbCnt').textContent=`${lbIdx+1} / ${lbPh.length}`;
+  document.querySelector('.lb-prev').style.display=lbPh.length>1?'':'none';
+  document.querySelector('.lb-next').style.display=lbPh.length>1?'':'none';
+}
+function lbNav(d) { 
+  lbIdx = (lbIdx + d + lbPh.length) % lbPh.length;
+  showLb();
+}
+function closeLb() {
+  document.getElementById('lightbox').classList.remove('open');
+  lbPh = [];
+}
+
+// INITIALIZE APP
+renderAll();
+</script>
