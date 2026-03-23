@@ -370,9 +370,9 @@
         <div class="af-g">
           <label>Photos (up to 8)</label>
           <div class="photo-upload-wrap">
-            <input type="file" id="photoInput" accept="image/*" multiple onchange="handlePhotos(event)">
+            <input type="file" id="photoInput" accept="image/*" capture="environment" multiple onchange="handlePhotos(event)">
             <div class="upload-icon">📸</div>
-            <p class="upload-hint">Click to upload · <strong>JPG, PNG, WEBP</strong> · Max 8 photos</p>
+            <p class="upload-hint">📷 Tap to take a photo or choose from gallery · <strong>JPG, PNG, WEBP</strong> · Max 8 photos</p>
           </div>
           <div class="photo-previews-admin" id="photoPreviews"></div>
         </div>
@@ -489,16 +489,26 @@ function switchTab(id, btn) {
   btn.classList.add('active');
 }
 
-// PHOTOS
-function handlePhotos(e) {
+// PHOTOS — Cloudinary upload
+const CLOUD_NAME = 'ducjsgjj1';
+async function handlePhotos(e) {
   const files = Array.from(e.target.files);
   const left = 8 - pendingPh.length;
-  files.slice(0, left).forEach(f => {
-    const r = new FileReader();
-    r.onload = ev => { pendingPh.push(ev.target.result); renderPreviews(); };
-    r.readAsDataURL(f);
-  });
   if (files.length > left) toast('⚠️ Max 8 photos per unit');
+  const toUpload = files.slice(0, left);
+  toast('⏳ Uploading photos, please wait...');
+  for (const f of toUpload) {
+    try {
+      const fd = new FormData();
+      fd.append('file', f);
+      fd.append('upload_preset', 'primehold_uploads');
+      const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/image/upload`, { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.secure_url) { pendingPh.push(data.secure_url); renderPreviews(); }
+      else { toast('❌ Upload failed. Check Cloudinary preset.'); }
+    } catch (err) { toast('❌ Upload error: ' + err.message); }
+  }
+  toast('✅ Photos uploaded!');
   e.target.value = '';
 }
 
